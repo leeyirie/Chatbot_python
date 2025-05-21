@@ -1,106 +1,127 @@
 import os
 import warnings
 warnings.filterwarnings("ignore")
-# from langchain_community.document_loaders import PyMuPDFLoader # type: ignore
-# from langchain.text_splitter import RecursiveCharacterTextSplitter # type: ignore
-# from langchain.embeddings import HuggingFaceEmbeddings
-# from langchain.vectorstores import Chroma
-# from langchain_community.chat_models import ChatOllama 
 
 from PyPDF2 import PdfReader
-from sentence_transformers import SentenceTransformer
-# from chromadb import Chroma
-import chromadb
+from sentence_transformers import SentenceTransformer, util
+import numpy as np
 
-
-
-# Ollama 파이썬 라이브러리 (아직 공식적이지 않을 수 있으며, REST API 직접 호출 또는 LangChain 통합 등을 고려)
-# 여기서는 LangChain을 사용한 예시를 보여드립니다.
-from langchain.llms import Ollama
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.chains import RetrievalQA
-
-
-# PDF 파일 경로
-pdf_path = "./pdf/qna.pdf"
-
-# Ollama 모델 이름
-ollama_model = "exaone3.5"  # 또는 사용하려는 다른 모델
-# ollama_model = "benedict/linkbricks-llama3.1-korean:70b"
+# 파일 경로 - PDF 또는 TXT 파일
+file_path = "./pdf/qna.txt"  # PDF가 아닌 텍스트 파일 사용
 
 # 임베딩 모델
-embedding_model_name = "all-mpnet-base-v2"
-embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name)
-
-# ChromaDB 저장 경로 (선택 사항: 메모리에 저장하려면 None)
-persist_directory = "chroma_db"
+model_name = "all-mpnet-base-v2"
+model = SentenceTransformer(model_name)
 
 
-
-def extract_text_from_pdf(pdf_path):
+def extract_text_from_file(file_path):
+    """파일에서 텍스트 추출 - PDF 또는 TXT 파일 모두 지원"""
     text = ""
     try:
-        with open(pdf_path, 'rb') as file:
-            reader = PdfReader(file)
-            for page in reader.pages:
-                text += page.extract_text() + "\n"
+        if file_path.lower().endswith('.pdf'):
+            # PDF 파일 처리
+            with open(file_path, 'rb') as file:
+                reader = PdfReader(file)
+                for page in reader.pages:
+                    text += page.extract_text() + "\n"
+        elif file_path.lower().endswith('.txt'):
+            # 텍스트 파일 처리
+            with open(file_path, 'r', encoding='utf-8') as file:
+                text = file.read()
+        else:
+            print(f"지원되지 않는 파일 형식: {file_path}")
     except Exception as e:
-        print(f"PDF 파일 읽기 오류: {e}")
+        print(f"파일 읽기 오류: {e}")
     return text
 
 
+def create_knowledge_base(text):
+    """텍스트를 파싱하여 질문-답변 쌍 추출"""
+    # 간단한 구현: "Question:" 및 "Answer:" 포맷을 찾아 파싱
+    qa_pairs = []
+    
+    # 텍스트를 줄 단위로 분할
+    lines = text.split('\n')
+    
+    current_question = None
+    current_answer = None
+    
+    for line in lines:
+        line = line.strip()
+        if line.startswith("Question:"):
+            # 이전 QA 쌍이 있으면 저장
+            if current_question and current_answer:
+                qa_pairs.append((current_question, current_answer))
+            
+            # 새 질문 시작
+            current_question = line[len("Question:"):].strip()
+            current_answer = None
+        elif line.startswith("Answer:") and current_question:
+            # 답변 시작
+            current_answer = line[len("Answer:"):].strip()
+    
+    # 마지막 QA 쌍 추가
+    if current_question and current_answer:
+        qa_pairs.append((current_question, current_answer))
+    
+    return qa_pairs
 
-def create_knowledge_base(pdf_text, embeddings, persist_directory=None):
-    # 텍스트를 문서 단위로 분할 (예: 문장 또는 특정 길이 청크)
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    texts = text_splitter.split_text(pdf_text)
 
-    # ChromaDB에 벡터 임베딩 저장
-    if persist_directory:
-        db = Chroma.from_texts(texts, embeddings, persist_directory=persist_directory)
-        db.persist()
-        return db
-    else:
-        return Chroma.from_texts(texts, embeddings)
-
-def create_chatbot(ollama_model, knowledge_base):
-    llm = Ollama(model=ollama_model)
-    qa = RetrievalQA.from_chain_type(llm=llm,
-                                    chain_type="stuff",
-                                    retriever=knowledge_base.as_retriever())
-    return qa
+def find_most_similar_qa(query, qa_pairs, model):
+    """질문에 가장 유사한 QA 쌍 찾기"""
+    if not qa_pairs:
+        return "지식 베이스에 데이터가 없습니다."
+    
+    # 쿼리 임베딩
+    query_embedding = model.encode(query, convert_to_tensor=True)
+    
+    # 모든 질문 임베딩
+    question_embeddings = model.encode([q for q, _ in qa_pairs], convert_to_tensor=True)
+    
+    # 코사인 유사도 계산
+    similarities = util.pytorch_cos_sim(query_embedding, question_embeddings)[0]
+    
+    # 가장 유사한 인덱스 찾기
+    best_idx = int(np.argmax(similarities))
+    similarity_score = float(similarities[best_idx])
+    
+    # 임계값 설정 (0.5 이상일 때만 관련 있는 것으로 간주)
+    if similarity_score < 0.5:
+        return "죄송합니다. 질문에 답할 수 있는 정보가 없습니다."
+    
+    # 가장 유사한 QA 쌍 반환
+    return qa_pairs[best_idx][1]
 
 
 if __name__ == "__main__":
-    # 1. PDF 파일 내용 추출
-    pdf_text = extract_text_from_pdf(pdf_path)
-    if not pdf_text:
+    # 1. 파일 내용 추출
+    file_text = extract_text_from_file(file_path)
+    if not file_text:
+        print("파일을 읽을 수 없습니다. 파일 경로를 확인하세요.")
         exit()
 
-    # 2. 및 3. 지식 베이스 생성 (벡터 임베딩 및 저장)
-    knowledge_base = create_knowledge_base(pdf_text, embeddings, persist_directory)
-
-    # 4. 챗봇 생성
-    chatbot = create_chatbot(ollama_model, knowledge_base)
+    # 2. 지식 베이스 생성 (질문-답변 쌍 추출)
+    qa_pairs = create_knowledge_base(file_text)
+    
+    # 추출된 질문-답변 쌍 출력
+    print(f"추출된 질문-답변 쌍: {len(qa_pairs)}개")
+    for i, (q, a) in enumerate(qa_pairs):
+        print(f"[{i+1}] Q: {q}")
+        print(f"    A: {a}")
+    print()
 
     # 질의응답 루프
-    print("Ollama 기반 챗봇 시작 (종료하려면 'quit' 입력)")
+    print("질의응답 챗봇 시작 (종료하려면 'quit' 입력)")
     while True:
         query = input("질문: ")
         if query.lower() == 'quit':
             break
 
         try:
-            response = chatbot({"query": query})
-            print("답변:", response['result'])
+            answer = find_most_similar_qa(query, qa_pairs, model)
+            print("답변:", answer)
         except Exception as e:
             print(f"오류 발생: {e}")
-
-    # (선택 사항) ChromaDB 영구 저장 시 연결 닫기
-    if persist_directory and knowledge_base:
-        knowledge_base._client.close()
 
 
 

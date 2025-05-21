@@ -1,0 +1,16 @@
+This is a sample PDF document for testing the QnA chatbot.
+
+Question: Who created this document?
+Answer: This document was created for testing the QnA chatbot.
+
+Question: What is the purpose of this document?
+Answer: The purpose of this document is to test the QnA chatbot functionality.
+
+Question: How does the chatbot work?
+Answer: The chatbot works by extracting text from PDF documents, creating embeddings, and using Ollama for generating answers to user questions.
+
+Question: What models does the chatbot use?
+Answer: The chatbot uses HuggingFace embeddings and Ollama language model to process and generate responses.
+
+Question: What libraries does the project use?
+Answer: The project uses PyPDF2, sentence-transformers, chromadb, and langchain libraries. 
